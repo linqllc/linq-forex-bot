@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Stable repository entry point for the native research runner."""
+
 from __future__ import annotations
 
 import runpy

@@ -77,7 +77,8 @@ def run_native_phase4_1(
     calibration = calibration_table(predictions)
     exclusion_summary = (
         exclusion_log.groupby(["included", "exclusion_reason"], dropna=False)
-        .size().reset_index(name="setups")
+        .size()
+        .reset_index(name="setups")
         .sort_values(["included", "setups"], ascending=[False, False])
     )
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 
@@ -30,9 +29,7 @@ def load_oanda_m5(path: str | Path) -> pd.DataFrame:
     path = Path(path)
 
     if not path.exists():
-        raise FileNotFoundError(
-            f"Candle file not found: {path.resolve()}"
-        )
+        raise FileNotFoundError(f"Candle file not found: {path.resolve()}")
 
     raw = pd.read_csv(path)
 
@@ -43,8 +40,7 @@ def load_oanda_m5(path: str | Path) -> pd.DataFrame:
 
         if source is None and standard_name != "volume":
             raise ValueError(
-                f"Could not locate {standard_name!r}. "
-                f"Available columns: {list(raw.columns)}"
+                f"Could not locate {standard_name!r}. Available columns: {list(raw.columns)}"
             )
 
         if source is not None:
@@ -75,9 +71,7 @@ def load_oanda_m5(path: str | Path) -> pd.DataFrame:
             errors="coerce",
         )
 
-    candles = candles.dropna(
-        subset=["timestamp", "open", "high", "low", "close"]
-    )
+    candles = candles.dropna(subset=["timestamp", "open", "high", "low", "close"])
 
     candles = (
         candles.sort_values("timestamp")
@@ -94,27 +88,21 @@ def load_oanda_m5(path: str | Path) -> pd.DataFrame:
     )
 
     if invalid.any():
-        raise ValueError(
-            f"Detected {int(invalid.sum())} invalid OHLC rows."
-        )
+        raise ValueError(f"Detected {int(invalid.sum())} invalid OHLC rows.")
 
     candles = candles.set_index("timestamp")
 
     # Backtrader expects a timezone-naive DatetimeIndex.
     candles.index = candles.index.tz_convert("UTC").tz_localize(None)
 
-    return candles[
-        ["open", "high", "low", "close", "volume"]
-    ].astype(float)
+    return candles[["open", "high", "low", "close", "volume"]].astype(float)
 
 
 def load_selected_signals(path: str | Path) -> pd.DataFrame:
     path = Path(path)
 
     if not path.exists():
-        raise FileNotFoundError(
-            f"Signal file not found: {path.resolve()}"
-        )
+        raise FileNotFoundError(f"Signal file not found: {path.resolve()}")
 
     signals = pd.read_csv(path)
 
@@ -129,9 +117,7 @@ def load_selected_signals(path: str | Path) -> pd.DataFrame:
     missing = required.difference(signals.columns)
 
     if missing:
-        raise ValueError(
-            f"Signal file is missing columns: {sorted(missing)}"
-        )
+        raise ValueError(f"Signal file is missing columns: {sorted(missing)}")
 
     signals["timestamp"] = pd.to_datetime(
         signals["timestamp"],
@@ -153,16 +139,9 @@ def load_selected_signals(path: str | Path) -> pd.DataFrame:
                 errors="coerce",
             )
 
-    signals["direction"] = (
-        signals["direction"]
-        .astype(str)
-        .str.strip()
-        .str.lower()
-    )
+    signals["direction"] = signals["direction"].astype(str).str.strip().str.lower()
 
-    signals = signals[
-        signals["direction"].isin(["long", "short"])
-    ]
+    signals = signals[signals["direction"].isin(["long", "short"])]
 
     signals = (
         signals.dropna(

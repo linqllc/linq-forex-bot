@@ -37,15 +37,10 @@ class LinqSignalReplayStrategy(bt.Strategy):
         self.skipped_signals = []
 
     def _current_timestamp(self):
-        return pd.Timestamp(
-            self.data.datetime.datetime(0)
-        ).to_pydatetime()
+        return pd.Timestamp(self.data.datetime.datetime(0)).to_pydatetime()
 
     def _trade_is_active(self):
-        return bool(
-            self.position.size != 0
-            or self.active_trade is not None
-        )
+        return bool(self.position.size != 0 or self.active_trade is not None)
 
     def next(self):
         timestamp = self._current_timestamp()
@@ -71,13 +66,9 @@ class LinqSignalReplayStrategy(bt.Strategy):
         current_close = float(self.data.close[0])
 
         if direction == "long":
-            valid_geometry = (
-                stop_price < current_close < target_price
-            )
+            valid_geometry = stop_price < current_close < target_price
         else:
-            valid_geometry = (
-                target_price < current_close < stop_price
-            )
+            valid_geometry = target_price < current_close < stop_price
 
         if not valid_geometry:
             self.skipped_signals.append(
@@ -143,9 +134,7 @@ class LinqSignalReplayStrategy(bt.Strategy):
                 "replay_close": current_close,
                 "stop_price": stop_price,
                 "target_price": target_price,
-                "spread_pips_at_entry": signal.get(
-                    "spread_pips_at_entry"
-                ),
+                "spread_pips_at_entry": signal.get("spread_pips_at_entry"),
                 "probability_1r": signal.get("probability_1r"),
                 "order_status": "submitted",
             }
@@ -167,9 +156,7 @@ class LinqSignalReplayStrategy(bt.Strategy):
         role = self.order_roles.get(order.ref, "unknown")
 
         if order.status == order.Completed and self.active_trade:
-            fill_time = bt.num2date(
-                order.executed.dt
-            ).replace(tzinfo=None)
+            fill_time = bt.num2date(order.executed.dt).replace(tzinfo=None)
 
             fill_price = float(order.executed.price)
 
@@ -190,9 +177,7 @@ class LinqSignalReplayStrategy(bt.Strategy):
             self.skipped_signals.append(
                 {
                     "timestamp": self._current_timestamp(),
-                    "reason": (
-                        f"order_{order.getstatusname().lower()}"
-                    ),
+                    "reason": (f"order_{order.getstatusname().lower()}"),
                     "order_role": role,
                 }
             )
@@ -204,9 +189,7 @@ class LinqSignalReplayStrategy(bt.Strategy):
         active = self.active_trade or {}
         signal = active.get("signal", {})
 
-        direction = str(
-            signal.get("direction", "")
-        ).lower()
+        direction = str(signal.get("direction", "")).lower()
 
         entry_price = active.get("entry_fill_price")
         exit_price = active.get("exit_fill_price")
@@ -231,13 +214,8 @@ class LinqSignalReplayStrategy(bt.Strategy):
         risk_price = np.nan
         realized_r_before_cost = np.nan
 
-        if (
-            entry_price is not None
-            and np.isfinite(stop_price)
-        ):
-            risk_price = abs(
-                float(entry_price) - float(stop_price)
-            )
+        if entry_price is not None and np.isfinite(stop_price):
+            risk_price = abs(float(entry_price) - float(stop_price))
 
         if (
             entry_price is not None
@@ -250,42 +228,22 @@ class LinqSignalReplayStrategy(bt.Strategy):
                 if direction == "long"
                 else float(entry_price) - float(exit_price)
             )
-            realized_r_before_cost = (
-                signed_move / risk_price
-            )
+            realized_r_before_cost = signed_move / risk_price
 
-        if (
-            np.isfinite(spread_pips)
-            and np.isfinite(risk_price)
-            and risk_price > 0
-        ):
-            spread_cost_r = (
-                float(spread_pips)
-                * self.p.pip_size
-                / risk_price
-            )
+        if np.isfinite(spread_pips) and np.isfinite(risk_price) and risk_price > 0:
+            spread_cost_r = float(spread_pips) * self.p.pip_size / risk_price
         else:
             spread_cost_r = 0.0
 
         if np.isfinite(risk_price) and risk_price > 0:
-            slippage_cost_r = (
-                2.0
-                * self.p.slippage_pips_each_side
-                * self.p.pip_size
-                / risk_price
-            )
+            slippage_cost_r = 2.0 * self.p.slippage_pips_each_side * self.p.pip_size / risk_price
         else:
             slippage_cost_r = 0.0
 
-        total_execution_cost_r = (
-            spread_cost_r + slippage_cost_r
-        )
+        total_execution_cost_r = spread_cost_r + slippage_cost_r
 
         if np.isfinite(realized_r_before_cost):
-            realized_r_after_all_costs = (
-                realized_r_before_cost
-                - total_execution_cost_r
-            )
+            realized_r_after_all_costs = realized_r_before_cost - total_execution_cost_r
         else:
             realized_r_after_all_costs = np.nan
 
@@ -298,15 +256,8 @@ class LinqSignalReplayStrategy(bt.Strategy):
                 "entry_fill_time": active.get("entry_fill_time"),
                 "entry_fill_price": entry_price,
                 "entry_difference_pips": (
-                    (
-                        float(entry_price)
-                        - float(reference_entry)
-                    )
-                    / self.p.pip_size
-                    if (
-                        entry_price is not None
-                        and np.isfinite(reference_entry)
-                    )
+                    (float(entry_price) - float(reference_entry)) / self.p.pip_size
+                    if (entry_price is not None and np.isfinite(reference_entry))
                     else np.nan
                 ),
                 "exit_fill_time": active.get("exit_fill_time"),
@@ -315,29 +266,15 @@ class LinqSignalReplayStrategy(bt.Strategy):
                 "stop_price": stop_price,
                 "target_price": target_price,
                 "risk_price": risk_price,
-                "risk_pips": (
-                    risk_price / self.p.pip_size
-                    if np.isfinite(risk_price)
-                    else np.nan
-                ),
+                "risk_pips": (risk_price / self.p.pip_size if np.isfinite(risk_price) else np.nan),
                 "spread_pips_at_entry": spread_pips,
                 "spread_cost_r": spread_cost_r,
                 "slippage_cost_r": slippage_cost_r,
-                "total_execution_cost_r": (
-                    total_execution_cost_r
-                ),
-                "realized_r_before_cost": (
-                    realized_r_before_cost
-                ),
-                "realized_r_after_all_costs": (
-                    realized_r_after_all_costs
-                ),
-                "phase4_gross_result_r": signal.get(
-                    "gross_result_r"
-                ),
-                "phase4_net_result_r": signal.get(
-                    "net_result_r"
-                ),
+                "total_execution_cost_r": (total_execution_cost_r),
+                "realized_r_before_cost": (realized_r_before_cost),
+                "realized_r_after_all_costs": (realized_r_after_all_costs),
+                "phase4_gross_result_r": signal.get("gross_result_r"),
+                "phase4_net_result_r": signal.get("net_result_r"),
                 "backtrader_gross_pnl": float(trade.pnl),
                 "backtrader_net_pnl": float(trade.pnlcomm),
                 "bars_held": int(trade.barlen),

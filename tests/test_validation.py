@@ -35,22 +35,15 @@ def test_valid_backtest_passes():
 def test_large_parity_difference_fails():
     summary = valid_summary()
 
-    summary["parity"][
-        "net_parity_difference_r"
-    ] = 0.50
+    summary["parity"]["net_parity_difference_r"] = 0.50
 
     result = validate_backtest(
         summary,
-        ValidationLimits(
-            maximum_net_parity_difference_r=0.10
-        ),
+        ValidationLimits(maximum_net_parity_difference_r=0.10),
     )
 
     assert result["passed"] is False
-    assert (
-        "net_parity_difference"
-        in result["failed_checks"]
-    )
+    assert "net_parity_difference" in result["failed_checks"]
 
 
 def test_skipped_signal_fails():
@@ -66,7 +59,4 @@ def test_skipped_signal_fails():
     )
 
     assert result["passed"] is False
-    assert (
-        "skipped_signals_allowed"
-        in result["failed_checks"]
-    )
+    assert "skipped_signals_allowed" in result["failed_checks"]

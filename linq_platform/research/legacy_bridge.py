@@ -60,10 +60,7 @@ def locate_phase4_script(parent_project: Path) -> Path:
 
 def validate_signal_file(path: Path) -> dict[str, Any]:
     if not path.exists():
-        raise FileNotFoundError(
-            "Phase 4.1 did not create the expected signal file:\n"
-            f"{path}"
-        )
+        raise FileNotFoundError(f"Phase 4.1 did not create the expected signal file:\n{path}")
 
     signals = pd.read_csv(path)
 
@@ -97,41 +94,25 @@ def validate_signal_file(path: Path) -> dict[str, Any]:
             errors="coerce",
         )
 
-    signals["direction"] = (
-        signals["direction"]
-        .astype(str)
-        .str.strip()
-        .str.lower()
-    )
+    signals["direction"] = signals["direction"].astype(str).str.strip().str.lower()
 
     invalid_timestamp = signals["timestamp"].isna()
-    invalid_direction = ~signals["direction"].isin(
-        ["long", "short"]
-    )
+    invalid_direction = ~signals["direction"].isin(["long", "short"])
     invalid_numeric = signals[numeric_columns].isna().any(axis=1)
 
     geometry_valid = (
-        (
-            signals["direction"].eq("long")
-            & signals["stop_price"].lt(signals["entry_price"])
-            & signals["target_price"].gt(signals["entry_price"])
-        )
-        |
-        (
-            signals["direction"].eq("short")
-            & signals["stop_price"].gt(signals["entry_price"])
-            & signals["target_price"].lt(signals["entry_price"])
-        )
+        signals["direction"].eq("long")
+        & signals["stop_price"].lt(signals["entry_price"])
+        & signals["target_price"].gt(signals["entry_price"])
+    ) | (
+        signals["direction"].eq("short")
+        & signals["stop_price"].gt(signals["entry_price"])
+        & signals["target_price"].lt(signals["entry_price"])
     )
 
     invalid_geometry = ~geometry_valid
 
-    invalid_rows = (
-        invalid_timestamp
-        | invalid_direction
-        | invalid_numeric
-        | invalid_geometry
-    )
+    invalid_rows = invalid_timestamp | invalid_direction | invalid_numeric | invalid_geometry
 
     if invalid_rows.any():
         details = signals.loc[
@@ -146,49 +127,27 @@ def validate_signal_file(path: Path) -> dict[str, Any]:
         ]
 
         raise ValueError(
-            "Phase 4.1 produced invalid selected signals:\n"
-            f"{details.to_string(index=False)}"
+            f"Phase 4.1 produced invalid selected signals:\n{details.to_string(index=False)}"
         )
 
-    duplicate_timestamps = int(
-        signals["timestamp"].duplicated().sum()
-    )
+    duplicate_timestamps = int(signals["timestamp"].duplicated().sum())
 
     if duplicate_timestamps:
         raise ValueError(
-            "Phase 4.1 produced duplicate selected-signal timestamps: "
-            f"{duplicate_timestamps}"
+            f"Phase 4.1 produced duplicate selected-signal timestamps: {duplicate_timestamps}"
         )
 
     return {
         "rows": int(len(signals)),
-        "first_signal": (
-            signals["timestamp"].min().isoformat()
-            if len(signals)
-            else None
-        ),
-        "last_signal": (
-            signals["timestamp"].max().isoformat()
-            if len(signals)
-            else None
-        ),
-        "long_signals": int(
-            signals["direction"].eq("long").sum()
-        ),
-        "short_signals": int(
-            signals["direction"].eq("short").sum()
-        ),
+        "first_signal": (signals["timestamp"].min().isoformat() if len(signals) else None),
+        "last_signal": (signals["timestamp"].max().isoformat() if len(signals) else None),
+        "long_signals": int(signals["direction"].eq("long").sum()),
+        "short_signals": int(signals["direction"].eq("short").sum()),
         "average_probability_1r": (
-            float(signals["probability_1r"].mean())
-            if len(signals)
-            else None
+            float(signals["probability_1r"].mean()) if len(signals) else None
         ),
-        "gross_r": float(
-            signals["gross_result_r"].sum()
-        ),
-        "net_r": float(
-            signals["net_result_r"].sum()
-        ),
+        "gross_r": float(signals["gross_result_r"].sum()),
+        "net_r": float(signals["net_result_r"].sum()),
         "sha256": sha256_file(path),
     }
 
@@ -200,23 +159,13 @@ def run_phase4_pipeline(
     script = locate_phase4_script(parent_project)
 
     signal_path = (
-        parent_project
-        / "reports"
-        / "v9_phase4_1"
-        / "EUR_USD_phase4_1_selected_trades.csv"
+        parent_project / "reports" / "v9_phase4_1" / "EUR_USD_phase4_1_selected_trades.csv"
     )
 
-    candle_path = (
-        parent_project
-        / "data"
-        / "cache"
-        / "EUR_USD_M5.csv"
-    )
+    candle_path = parent_project / "data" / "cache" / "EUR_USD_M5.csv"
 
     if not candle_path.exists():
-        raise FileNotFoundError(
-            f"Candle file not found:\n{candle_path}"
-        )
+        raise FileNotFoundError(f"Candle file not found:\n{candle_path}")
 
     candle_hash_before = sha256_file(candle_path)
     script_hash_before = sha256_file(script)

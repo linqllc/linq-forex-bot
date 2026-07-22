@@ -43,27 +43,13 @@ def validate_backtest(
     completed_trades = int(net.get("trades", 0))
 
     matched_trades = int(parity.get("matched_trades", 0))
-    same_outcome_trades = int(
-        parity.get("same_outcome_trades", 0)
-    )
+    same_outcome_trades = int(parity.get("same_outcome_trades", 0))
 
-    outcome_match_rate = (
-        same_outcome_trades / matched_trades
-        if matched_trades > 0
-        else 0.0
-    )
+    outcome_match_rate = same_outcome_trades / matched_trades if matched_trades > 0 else 0.0
 
-    gross_difference = abs(
-        _finite_float(
-            parity.get("gross_parity_difference_r")
-        )
-    )
+    gross_difference = abs(_finite_float(parity.get("gross_parity_difference_r")))
 
-    net_difference = abs(
-        _finite_float(
-            parity.get("net_parity_difference_r")
-        )
-    )
+    net_difference = abs(_finite_float(parity.get("net_parity_difference_r")))
 
     checks = {
         "signals_exist": {
@@ -81,11 +67,7 @@ def validate_backtest(
             "required": signals_loaded,
         },
         "skipped_signals_allowed": {
-            "passed": (
-                signals_skipped == 0
-                if not limits.allow_skipped_signals
-                else True
-            ),
+            "passed": (signals_skipped == 0 if not limits.allow_skipped_signals else True),
             "observed": signals_skipped,
             "required": 0,
         },
@@ -99,38 +81,23 @@ def validate_backtest(
             "required": signals_submitted,
         },
         "outcome_match_rate": {
-            "passed": (
-                outcome_match_rate
-                >= limits.minimum_outcome_match_rate
-            ),
+            "passed": (outcome_match_rate >= limits.minimum_outcome_match_rate),
             "observed": outcome_match_rate,
             "required": limits.minimum_outcome_match_rate,
         },
         "gross_parity_difference": {
-            "passed": (
-                gross_difference
-                <= limits.maximum_gross_parity_difference_r
-            ),
+            "passed": (gross_difference <= limits.maximum_gross_parity_difference_r),
             "observed": gross_difference,
-            "required": (
-                limits.maximum_gross_parity_difference_r
-            ),
+            "required": (limits.maximum_gross_parity_difference_r),
         },
         "net_parity_difference": {
-            "passed": (
-                net_difference
-                <= limits.maximum_net_parity_difference_r
-            ),
+            "passed": (net_difference <= limits.maximum_net_parity_difference_r),
             "observed": net_difference,
             "required": limits.maximum_net_parity_difference_r,
         },
     }
 
-    failed_checks = [
-        name
-        for name, check in checks.items()
-        if not check["passed"]
-    ]
+    failed_checks = [name for name, check in checks.items() if not check["passed"]]
 
     return {
         "status": "PASSED" if not failed_checks else "FAILED",
@@ -168,15 +135,7 @@ def print_validation_report(
         else:
             required_text = str(required)
 
-        print(
-            f"{status:<6}"
-            f"{label:<39}"
-            f"Observed: {observed_text:<14}"
-            f"Required: {required_text}"
-        )
+        print(f"{status:<6}{label:<39}Observed: {observed_text:<14}Required: {required_text}")
 
     print("-" * 108)
-    print(
-        f"Validation status:              "
-        f"{validation['status']}"
-    )
+    print(f"Validation status:              {validation['status']}")
