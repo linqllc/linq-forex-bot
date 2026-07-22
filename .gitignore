@@ -1,64 +1,42 @@
-# -----------------------------
 # Python
-# -----------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+
+# Virtual environments
 .venv/
 venv/
 env/
-__pycache__/
-*.py[cod]
-*.so
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
 
-# -----------------------------
-# macOS
-# -----------------------------
-.DS_Store
-
-# -----------------------------
-# IDE
-# -----------------------------
+# IDEs
 .vscode/
 .idea/
 
-# -----------------------------
-# Build
-# -----------------------------
+# macOS
+.DS_Store
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
 build/
 dist/
 *.egg-info/
 
-# -----------------------------
-# Local Environment
-# -----------------------------
-.env
-.env.*
-
-# -----------------------------
-# Generated Reports
-# -----------------------------
+# Local data
 reports/
-**/reports/
+data/*.csv
+data/*.parquet
+data/*.feather
 
-# -----------------------------
-# Cache
-# -----------------------------
-data/cache/
-**/cache/
+# Temporary files
+*.log
+*.tmp
 
-# -----------------------------
-# Backups
-# -----------------------------
-.migration_backup/
-*.backup*
+# Old backups
+*_backup*
 *.bak
-
-# -----------------------------
-# Legacy Code (Reference Only)
-# -----------------------------
-legacy/
-linq_v9_phase1/
-linq_v9_phase2/
-linq_v9_phase3/
-linq_forex_bot_v5/
+*.kup*
