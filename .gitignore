@@ -1,39 +1,64 @@
-# Python environments and caches
+# -----------------------------
+# Python
+# -----------------------------
 .venv/
 venv/
 env/
-**/__pycache__/
+__pycache__/
 *.py[cod]
+*.so
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 
-# macOS and editors
+# -----------------------------
+# macOS
+# -----------------------------
 .DS_Store
+
+# -----------------------------
+# IDE
+# -----------------------------
 .vscode/
 .idea/
 
-# Generated reports and caches anywhere in the repository
-reports/
-**/reports/
-data/cache/
-**/data/cache/
-.migration_backup/
-**/.migration_backup/
-
-# Temporary and backup files
-*.backup
-*.backup_*
-*.bak
-*.tmp
-*.log
-
-# Packaging
+# -----------------------------
+# Build
+# -----------------------------
 build/
 dist/
 *.egg-info/
 
-# Secrets and local environment
+# -----------------------------
+# Local Environment
+# -----------------------------
 .env
 .env.*
-!.env.example
+
+# -----------------------------
+# Generated Reports
+# -----------------------------
+reports/
+**/reports/
+
+# -----------------------------
+# Cache
+# -----------------------------
+data/cache/
+**/cache/
+
+# -----------------------------
+# Backups
+# -----------------------------
+.migration_backup/
+*.backup*
+*.bak
+
+# -----------------------------
+# Legacy Code (Reference Only)
+# -----------------------------
+legacy/
+linq_v9_phase1/
+linq_v9_phase2/
+linq_v9_phase3/
+linq_forex_bot_v5/
