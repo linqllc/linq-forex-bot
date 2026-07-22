@@ -18,7 +18,7 @@ from .controlled_rules import (
     calibration_table,
 )
 from .data import load_candles, load_phase1, load_setups
-from .model import predict_holdout
+from .probability_model import predict_holdout
 from .reporting import build_report, equity_curve, summarize
 
 
