@@ -1,0 +1,1 @@
+"""LINQ Quant research platform."""

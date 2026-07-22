@@ -1,0 +1,62 @@
+strategy:
+  name: LINQ Forex Intelligence Bot v5.1 MTF
+  timezone: America/New_York
+  granularity: M5
+  instruments:
+  - EUR_USD
+  - GBP_USD
+  - USD_JPY
+  - AUD_USD
+  session:
+    opening_range_start: 09:30
+    opening_range_end: 09:45
+    entry_start: 09:45
+    entry_end: '12:00'
+  impulse:
+    lookback_bodies: 20
+    body_multiplier: 1.35
+    minimum_body_fraction: 0.6
+    atr_period: 14
+    minimum_displacement_atr: 1.1
+  structure:
+    fast_ema: 20
+    slow_ema: 50
+    swing_window: 3
+  zone:
+    search_back_candles: 10
+    expiration_candles: 18
+    first_touch_only: true
+    maximum_width_atr: 1.25
+  quality:
+    minimum_score: 65
+    weights:
+      trend_alignment: 15
+      multi_timeframe_alignment: 15
+      break_of_structure: 15
+      fresh_zone: 15
+      impulse_strength: 15
+      displacement: 15
+      opening_range_break: 10
+  optimizer:
+    minimum_r: 1.0
+    maximum_r: 5.0
+    step_r: 0.25
+    minimum_trades: 20
+    train_fraction: 0.6
+    validation_fraction: 0.2
+  risk:
+    stop_atr_buffer: 0.1
+    max_trades_per_pair_per_day: 1
+  costs:
+    default_spread_pips:
+      EUR_USD: 0.8
+      GBP_USD: 1.2
+      USD_JPY: 0.9
+      AUD_USD: 1.0
+    slippage_pips: 0.2
+  multi_timeframe:
+    enabled: true
+    fast_ema: 20
+    slow_ema: 50
+    require_alignment: true
+    minimum_alignment: 1.0
