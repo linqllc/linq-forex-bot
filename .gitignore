@@ -1,0 +1,39 @@
+# Python environments and caches
+.venv/
+venv/
+env/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# macOS and editors
+.DS_Store
+.vscode/
+.idea/
+
+# Generated reports and caches anywhere in the repository
+reports/
+**/reports/
+data/cache/
+**/data/cache/
+.migration_backup/
+**/.migration_backup/
+
+# Temporary and backup files
+*.backup
+*.backup_*
+*.bak
+*.tmp
+*.log
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example

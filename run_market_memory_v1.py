@@ -1,0 +1,1431 @@
+#!/usr/bin/env python3
+"""
+LINQ MARKET MEMORY ENGINE — V1
+
+Purpose
+-------
+1. Load M5 candle data.
+2. Detect historical bullish and bearish reactions.
+3. Group nearby reaction prices into demand and supply zones.
+4. Define objective zone tops and bottoms.
+5. Backtest future zone revisits at targets of 1R and better.
+6. Produce current active zones based only on recent historical data.
+
+This is a research engine, not a live trading bot.
+
+Dependencies
+------------
+pip install pandas numpy
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+import pandas as pd
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+@dataclass(frozen=True)
+class Config:
+    # ATR
+    atr_period: int = 14
+
+    # Reaction detection
+    reaction_atr: float = 1.0
+    reaction_lookahead_bars: int = 24
+    pivot_left_bars: int = 3
+    pivot_right_bars: int = 3
+
+    # Zone discovery
+    zone_lookback_days: int = 14
+    cluster_radius_atr: float = 0.50
+    minimum_reactions: int = 2
+    maximum_zone_width_atr: float = 2.0
+
+    # Zone trade simulation
+    stop_buffer_atr: float = 0.15
+    maximum_trade_bars: int = 96
+    targets_r: tuple[float, ...] = (
+        1.0,
+        1.25,
+        1.5,
+        2.0,
+        2.5,
+        3.0,
+    )
+
+    # Walk-forward testing
+    research_days: int = 90
+    train_days: int = 14
+    test_days: int = 7
+    step_days: int = 7
+
+    # Reporting
+    current_zone_lookback_days: int = 14
+    top_zones_to_print: int = 10
+
+
+# =============================================================================
+# DATA LOADING
+# =============================================================================
+
+COLUMN_ALIASES = {
+    "time": [
+        "time",
+        "timestamp",
+        "datetime",
+        "date",
+    ],
+    "open": [
+        "open",
+        "mid_open",
+        "bid_open",
+        "o",
+    ],
+    "high": [
+        "high",
+        "mid_high",
+        "bid_high",
+        "h",
+    ],
+    "low": [
+        "low",
+        "mid_low",
+        "bid_low",
+        "l",
+    ],
+    "close": [
+        "close",
+        "mid_close",
+        "bid_close",
+        "c",
+    ],
+    "volume": [
+        "volume",
+        "tick_volume",
+        "vol",
+    ],
+}
+
+
+def normalize_name(name: str) -> str:
+    return (
+        str(name)
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+        .replace(".", "_")
+    )
+
+
+def find_column(
+    normalized_columns: dict[str, str],
+    aliases: Iterable[str],
+) -> str | None:
+    for alias in aliases:
+        key = normalize_name(alias)
+        if key in normalized_columns:
+            return normalized_columns[key]
+    return None
+
+
+def load_candles(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"Candle file not found: {path}")
+
+    df = pd.read_csv(path)
+
+    if df.empty:
+        raise ValueError("The candle CSV is empty.")
+
+    normalized_columns = {
+        normalize_name(column): column
+        for column in df.columns
+    }
+
+    rename_map: dict[str, str] = {}
+
+    for canonical, aliases in COLUMN_ALIASES.items():
+        source = find_column(normalized_columns, aliases)
+
+        if source is not None:
+            rename_map[source] = canonical
+
+    df = df.rename(columns=rename_map)
+
+    required = {"time", "open", "high", "low", "close"}
+    missing = required.difference(df.columns)
+
+    if missing:
+        raise ValueError(
+            "Missing required candle columns: "
+            + ", ".join(sorted(missing))
+            + f"\nAvailable columns: {list(df.columns)}"
+        )
+
+    df["time"] = pd.to_datetime(
+        df["time"],
+        utc=True,
+        errors="coerce",
+    )
+
+    for column in ["open", "high", "low", "close"]:
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
+
+    if "volume" in df.columns:
+        df["volume"] = pd.to_numeric(
+            df["volume"],
+            errors="coerce",
+        )
+
+    df = (
+        df.dropna(subset=["time", "open", "high", "low", "close"])
+        .sort_values("time")
+        .drop_duplicates(subset=["time"], keep="last")
+        .reset_index(drop=True)
+    )
+
+    invalid = (
+        (df["high"] < df["low"])
+        | (df["high"] < df["open"])
+        | (df["high"] < df["close"])
+        | (df["low"] > df["open"])
+        | (df["low"] > df["close"])
+    )
+
+    if invalid.any():
+        bad_count = int(invalid.sum())
+        raise ValueError(
+            f"Found {bad_count} candles with invalid OHLC relationships."
+        )
+
+    return df
+
+
+# =============================================================================
+# FEATURES
+# =============================================================================
+
+def calculate_atr(
+    df: pd.DataFrame,
+    period: int,
+) -> pd.Series:
+    previous_close = df["close"].shift(1)
+
+    true_range = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - previous_close).abs(),
+            (df["low"] - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    return true_range.ewm(
+        alpha=1.0 / period,
+        adjust=False,
+        min_periods=period,
+    ).mean()
+
+
+def add_features(
+    df: pd.DataFrame,
+    config: Config,
+) -> pd.DataFrame:
+    result = df.copy()
+
+    result["atr"] = calculate_atr(
+        result,
+        config.atr_period,
+    )
+
+    result["body_high"] = result[["open", "close"]].max(axis=1)
+    result["body_low"] = result[["open", "close"]].min(axis=1)
+
+    return result
+
+
+# =============================================================================
+# PIVOTS AND REACTIONS
+# =============================================================================
+
+def calculate_pivots(
+    df: pd.DataFrame,
+    left: int,
+    right: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    lows = df["low"].to_numpy(dtype=float)
+    highs = df["high"].to_numpy(dtype=float)
+
+    pivot_low = np.zeros(len(df), dtype=bool)
+    pivot_high = np.zeros(len(df), dtype=bool)
+
+    for index in range(left, len(df) - right):
+        low_window = lows[index - left:index + right + 1]
+        high_window = highs[index - left:index + right + 1]
+
+        pivot_low[index] = lows[index] <= np.min(low_window)
+        pivot_high[index] = highs[index] >= np.max(high_window)
+
+    return pivot_low, pivot_high
+
+
+def first_threshold_hit(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+    upper_price: float,
+    lower_price: float,
+) -> tuple[str | None, int | None]:
+    """
+    Determines which threshold is reached first.
+
+    Conservative same-candle rule:
+    If both levels are touched in the same candle, return "both".
+    """
+
+    for index in range(start_index, end_index + 1):
+        candle_high = float(df.at[index, "high"])
+        candle_low = float(df.at[index, "low"])
+
+        upper_hit = candle_high >= upper_price
+        lower_hit = candle_low <= lower_price
+
+        if upper_hit and lower_hit:
+            return "both", index
+
+        if upper_hit:
+            return "upper", index
+
+        if lower_hit:
+            return "lower", index
+
+    return None, None
+
+
+def detect_reactions(
+    df: pd.DataFrame,
+    config: Config,
+) -> pd.DataFrame:
+    pivot_low, pivot_high = calculate_pivots(
+        df,
+        config.pivot_left_bars,
+        config.pivot_right_bars,
+    )
+
+    reactions: list[dict] = []
+
+    last_possible_index = (
+        len(df)
+        - config.reaction_lookahead_bars
+        - 1
+    )
+
+    for index in range(
+        config.pivot_left_bars,
+        last_possible_index,
+    ):
+        atr = float(df.at[index, "atr"])
+
+        if not math.isfinite(atr) or atr <= 0:
+            continue
+
+        future_start = index + 1
+        future_end = min(
+            index + config.reaction_lookahead_bars,
+            len(df) - 1,
+        )
+
+        # -------------------------------------------------------------
+        # Demand reaction:
+        # Price forms a pivot low, then moves upward by the required
+        # ATR distance before failing downward by the same amount.
+        # -------------------------------------------------------------
+        if pivot_low[index]:
+            anchor = float(df.at[index, "low"])
+
+            upper_threshold = (
+                anchor
+                + config.reaction_atr * atr
+            )
+
+            lower_failure = (
+                anchor
+                - config.reaction_atr * atr
+            )
+
+            result, hit_index = first_threshold_hit(
+                df,
+                future_start,
+                future_end,
+                upper_threshold,
+                lower_failure,
+            )
+
+            if result == "upper" and hit_index is not None:
+                future_slice = df.loc[index + 1:future_end]
+
+                maximum_departure = (
+                    float(future_slice["high"].max())
+                    - anchor
+                )
+
+                reactions.append(
+                    {
+                        "reaction_index": index,
+                        "reaction_time": df.at[index, "time"],
+                        "confirmation_index": hit_index,
+                        "confirmation_time": df.at[hit_index, "time"],
+                        "direction": "demand",
+                        "anchor_price": anchor,
+                        "distal_price": float(df.at[index, "low"]),
+                        "proximal_price": float(df.at[index, "body_high"]),
+                        "atr": atr,
+                        "bars_to_confirmation": hit_index - index,
+                        "maximum_departure": maximum_departure,
+                        "departure_atr": maximum_departure / atr,
+                    }
+                )
+
+        # -------------------------------------------------------------
+        # Supply reaction:
+        # Price forms a pivot high, then moves downward by the required
+        # ATR distance before failing upward by the same amount.
+        # -------------------------------------------------------------
+        if pivot_high[index]:
+            anchor = float(df.at[index, "high"])
+
+            lower_threshold = (
+                anchor
+                - config.reaction_atr * atr
+            )
+
+            upper_failure = (
+                anchor
+                + config.reaction_atr * atr
+            )
+
+            result, hit_index = first_threshold_hit(
+                df,
+                future_start,
+                future_end,
+                upper_failure,
+                lower_threshold,
+            )
+
+            if result == "lower" and hit_index is not None:
+                future_slice = df.loc[index + 1:future_end]
+
+                maximum_departure = (
+                    anchor
+                    - float(future_slice["low"].min())
+                )
+
+                reactions.append(
+                    {
+                        "reaction_index": index,
+                        "reaction_time": df.at[index, "time"],
+                        "confirmation_index": hit_index,
+                        "confirmation_time": df.at[hit_index, "time"],
+                        "direction": "supply",
+                        "anchor_price": anchor,
+                        "distal_price": float(df.at[index, "high"]),
+                        "proximal_price": float(df.at[index, "body_low"]),
+                        "atr": atr,
+                        "bars_to_confirmation": hit_index - index,
+                        "maximum_departure": maximum_departure,
+                        "departure_atr": maximum_departure / atr,
+                    }
+                )
+
+    reactions_df = pd.DataFrame(reactions)
+
+    if reactions_df.empty:
+        return reactions_df
+
+    reactions_df = reactions_df.sort_values(
+        ["reaction_time", "direction"]
+    ).reset_index(drop=True)
+
+    return reactions_df
+
+
+# =============================================================================
+# REACTION CLUSTERING
+# =============================================================================
+
+def cluster_direction_reactions(
+    reactions: pd.DataFrame,
+    direction: str,
+    config: Config,
+) -> list[pd.DataFrame]:
+    subset = reactions[
+        reactions["direction"] == direction
+    ].copy()
+
+    if subset.empty:
+        return []
+
+    subset = subset.sort_values("anchor_price").reset_index(drop=True)
+
+    clusters: list[list[int]] = []
+    current_cluster: list[int] = [0]
+
+    for row_index in range(1, len(subset)):
+        current = subset.iloc[row_index]
+        previous = subset.iloc[current_cluster[-1]]
+
+        local_atr = float(
+            np.nanmedian(
+                [
+                    current["atr"],
+                    previous["atr"],
+                ]
+            )
+        )
+
+        allowed_distance = (
+            config.cluster_radius_atr
+            * local_atr
+        )
+
+        actual_distance = abs(
+            float(current["anchor_price"])
+            - float(previous["anchor_price"])
+        )
+
+        if actual_distance <= allowed_distance:
+            current_cluster.append(row_index)
+        else:
+            clusters.append(current_cluster)
+            current_cluster = [row_index]
+
+    clusters.append(current_cluster)
+
+    return [
+        subset.iloc[indexes].copy()
+        for indexes in clusters
+    ]
+
+
+def build_zones(
+    reactions: pd.DataFrame,
+    as_of_time: pd.Timestamp,
+    config: Config,
+) -> pd.DataFrame:
+    """
+    Uses only reactions confirmed by as_of_time.
+
+    This prevents a reaction from being used before its future move had
+    actually occurred.
+    """
+
+    lookback_start = (
+        as_of_time
+        - pd.Timedelta(days=config.zone_lookback_days)
+    )
+
+    eligible = reactions[
+        (reactions["reaction_time"] >= lookback_start)
+        & (reactions["confirmation_time"] <= as_of_time)
+    ].copy()
+
+    if eligible.empty:
+        return pd.DataFrame()
+
+    zones: list[dict] = []
+
+    for direction in ["demand", "supply"]:
+        clusters = cluster_direction_reactions(
+            eligible,
+            direction,
+            config,
+        )
+
+        for cluster_number, cluster in enumerate(clusters, start=1):
+            if len(cluster) < config.minimum_reactions:
+                continue
+
+            median_atr = float(cluster["atr"].median())
+
+            if direction == "demand":
+                # Distal = far/lower boundary.
+                # Proximal = near/upper boundary.
+                distal = float(
+                    cluster["distal_price"].quantile(0.10)
+                )
+                proximal = float(
+                    cluster["proximal_price"].quantile(0.75)
+                )
+
+                if proximal <= distal:
+                    proximal = float(cluster["anchor_price"].max())
+
+            else:
+                # Supply:
+                # Proximal = near/lower boundary.
+                # Distal = far/upper boundary.
+                proximal = float(
+                    cluster["proximal_price"].quantile(0.25)
+                )
+                distal = float(
+                    cluster["distal_price"].quantile(0.90)
+                )
+
+                if distal <= proximal:
+                    distal = float(cluster["anchor_price"].max())
+
+            zone_low = min(proximal, distal)
+            zone_high = max(proximal, distal)
+            zone_width = zone_high - zone_low
+
+            if median_atr <= 0:
+                continue
+
+            width_atr = zone_width / median_atr
+
+            if width_atr > config.maximum_zone_width_atr:
+                continue
+
+            reaction_count = int(len(cluster))
+            average_departure_atr = float(
+                cluster["departure_atr"].mean()
+            )
+            median_speed = float(
+                cluster["bars_to_confirmation"].median()
+            )
+
+            speed_score = 1.0 / max(median_speed, 1.0)
+
+            latest_reaction_time = cluster["reaction_time"].max()
+            age_days = max(
+                (
+                    as_of_time
+                    - latest_reaction_time
+                ).total_seconds() / 86_400,
+                0.0,
+            )
+
+            recency_score = math.exp(
+                -age_days / config.zone_lookback_days
+            )
+
+            strength_score = (
+                reaction_count
+                * average_departure_atr
+                * (1.0 + speed_score)
+                * recency_score
+            )
+
+            zones.append(
+                {
+                    "zone_id": (
+                        f"{direction}_{cluster_number}_"
+                        f"{as_of_time.strftime('%Y%m%d%H%M')}"
+                    ),
+                    "direction": direction,
+                    "zone_low": zone_low,
+                    "zone_high": zone_high,
+                    "proximal": proximal,
+                    "distal": distal,
+                    "zone_width": zone_width,
+                    "width_atr": width_atr,
+                    "median_atr": median_atr,
+                    "reaction_count": reaction_count,
+                    "average_departure_atr": average_departure_atr,
+                    "median_confirmation_bars": median_speed,
+                    "first_reaction_time": cluster["reaction_time"].min(),
+                    "latest_reaction_time": latest_reaction_time,
+                    "strength_score": strength_score,
+                    "as_of_time": as_of_time,
+                }
+            )
+
+    zones_df = pd.DataFrame(zones)
+
+    if zones_df.empty:
+        return zones_df
+
+    return zones_df.sort_values(
+        ["strength_score", "reaction_count"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
+
+
+# =============================================================================
+# ZONE TOUCH AND TRADE SIMULATION
+# =============================================================================
+
+def candle_touches_zone(
+    candle_low: float,
+    candle_high: float,
+    zone_low: float,
+    zone_high: float,
+) -> bool:
+    return (
+        candle_high >= zone_low
+        and candle_low <= zone_high
+    )
+
+
+def find_first_zone_touch(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+    zone_low: float,
+    zone_high: float,
+) -> int | None:
+    for index in range(start_index, end_index + 1):
+        if candle_touches_zone(
+            float(df.at[index, "low"]),
+            float(df.at[index, "high"]),
+            zone_low,
+            zone_high,
+        ):
+            return index
+
+    return None
+
+
+def simulate_zone_trade(
+    df: pd.DataFrame,
+    touch_index: int,
+    zone: pd.Series,
+    target_r: float,
+    config: Config,
+) -> dict:
+    """
+    Entry convention
+    ----------------
+    Demand:
+        Enter at the upper/proximal zone boundary.
+
+    Supply:
+        Enter at the lower/proximal zone boundary.
+
+    Stop:
+        Beyond distal boundary plus ATR buffer.
+
+    Conservative assumptions
+    ------------------------
+    - If stop and target are both hit in one candle, stop wins.
+    - A trade that reaches neither level before timeout closes at market.
+    """
+
+    direction = str(zone["direction"])
+    atr = float(df.at[touch_index, "atr"])
+
+    if not math.isfinite(atr) or atr <= 0:
+        return {"status": "invalid"}
+
+    buffer_distance = config.stop_buffer_atr * atr
+
+    if direction == "demand":
+        entry = float(zone["zone_high"])
+        stop = float(zone["zone_low"]) - buffer_distance
+        risk = entry - stop
+        target = entry + target_r * risk
+
+    else:
+        entry = float(zone["zone_low"])
+        stop = float(zone["zone_high"]) + buffer_distance
+        risk = stop - entry
+        target = entry - target_r * risk
+
+    if risk <= 0:
+        return {"status": "invalid"}
+
+    final_index = min(
+        touch_index + config.maximum_trade_bars,
+        len(df) - 1,
+    )
+
+    outcome = "timeout"
+    exit_price = float(df.at[final_index, "close"])
+    exit_index = final_index
+
+    for index in range(touch_index, final_index + 1):
+        high = float(df.at[index, "high"])
+        low = float(df.at[index, "low"])
+
+        if direction == "demand":
+            stop_hit = low <= stop
+            target_hit = high >= target
+
+        else:
+            stop_hit = high >= stop
+            target_hit = low <= target
+
+        if stop_hit and target_hit:
+            outcome = "loss"
+            exit_price = stop
+            exit_index = index
+            break
+
+        if stop_hit:
+            outcome = "loss"
+            exit_price = stop
+            exit_index = index
+            break
+
+        if target_hit:
+            outcome = "win"
+            exit_price = target
+            exit_index = index
+            break
+
+    if direction == "demand":
+        realized_r = (
+            exit_price - entry
+        ) / risk
+    else:
+        realized_r = (
+            entry - exit_price
+        ) / risk
+
+    if outcome == "loss":
+        realized_r = -1.0
+
+    elif outcome == "win":
+        realized_r = target_r
+
+    return {
+        "status": "complete",
+        "direction": direction,
+        "entry_time": df.at[touch_index, "time"],
+        "exit_time": df.at[exit_index, "time"],
+        "entry": entry,
+        "stop": stop,
+        "target": target,
+        "risk_price": risk,
+        "target_r": target_r,
+        "outcome": outcome,
+        "realized_r": realized_r,
+        "bars_held": exit_index - touch_index + 1,
+    }
+
+
+# =============================================================================
+# WALK-FORWARD TESTING
+# =============================================================================
+
+def nearest_index_at_or_after(
+    df: pd.DataFrame,
+    timestamp: pd.Timestamp,
+) -> int | None:
+    """Return the first candle index at or after timestamp."""
+    if df.empty:
+        return None
+
+    timestamp = pd.Timestamp(timestamp)
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    else:
+        timestamp = timestamp.tz_convert("UTC")
+
+    position = int(df["time"].searchsorted(timestamp, side="left"))
+
+    if position >= len(df):
+        return None
+
+    return position
+
+
+def nearest_index_before(
+    df: pd.DataFrame,
+    timestamp: pd.Timestamp,
+) -> int | None:
+    """Return the final candle index strictly before timestamp."""
+    if df.empty:
+        return None
+
+    timestamp = pd.Timestamp(timestamp)
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    else:
+        timestamp = timestamp.tz_convert("UTC")
+
+    position = int(df["time"].searchsorted(timestamp, side="left")) - 1
+
+    if position < 0:
+        return None
+
+    return position
+
+
+def run_walk_forward(
+    df: pd.DataFrame,
+    reactions: pd.DataFrame,
+    config: Config,
+) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    data_end = df["time"].max()
+    research_start = max(
+        df["time"].min(),
+        data_end - pd.Timedelta(days=config.research_days),
+    )
+
+    first_train_end = (
+        research_start
+        + pd.Timedelta(days=config.train_days)
+    )
+
+    trades: list[dict] = []
+    window_number = 0
+    train_end = first_train_end
+
+    while (
+        train_end
+        + pd.Timedelta(days=config.test_days)
+        <= data_end
+    ):
+        window_number += 1
+
+        test_start = train_end
+        test_end = (
+            train_end
+            + pd.Timedelta(days=config.test_days)
+        )
+
+        zones = build_zones(
+            reactions,
+            as_of_time=train_end,
+            config=config,
+        )
+
+        print(
+            f"Window {window_number:02d}: "
+            f"train_end={train_end}  "
+            f"test={test_start} to {test_end}  "
+            f"zones={len(zones)}"
+        )
+
+        if zones.empty:
+            print("    No qualifying zones were built.")
+            train_end += pd.Timedelta(days=config.step_days)
+            continue
+
+        test_start_index = nearest_index_at_or_after(
+            df,
+            test_start,
+        )
+        test_end_index = nearest_index_before(
+            df,
+            test_end,
+        )
+
+        if (
+            test_start_index is None
+            or test_end_index is None
+            or test_end_index <= test_start_index
+        ):
+            train_end += pd.Timedelta(days=config.step_days)
+            continue
+
+        for _, zone in zones.iterrows():
+            touch_index = find_first_zone_touch(
+                df,
+                test_start_index,
+                test_end_index,
+                float(zone["zone_low"]),
+                float(zone["zone_high"]),
+            )
+
+            if touch_index is None:
+                continue
+
+            print(
+                f"    TOUCH: {zone['direction']} "
+                f"{float(zone['zone_low']):.5f}-"
+                f"{float(zone['zone_high']):.5f} "
+                f"at {df.at[touch_index, 'time']}"
+            )
+
+            for target_r in config.targets_r:
+                simulation = simulate_zone_trade(
+                    df,
+                    touch_index,
+                    zone,
+                    target_r,
+                    config,
+                )
+
+                if simulation["status"] != "complete":
+                    continue
+
+                trades.append(
+                    {
+                        "window": window_number,
+                        "train_end": train_end,
+                        "test_start": test_start,
+                        "test_end": test_end,
+                        "zone_id": zone["zone_id"],
+                        "zone_direction": zone["direction"],
+                        "zone_low": zone["zone_low"],
+                        "zone_high": zone["zone_high"],
+                        "zone_reactions": zone["reaction_count"],
+                        "zone_strength": zone["strength_score"],
+                        "zone_average_departure_atr": zone[
+                            "average_departure_atr"
+                        ],
+                        **simulation,
+                    }
+                )
+
+        train_end += pd.Timedelta(days=config.step_days)
+
+    return pd.DataFrame(trades)
+
+
+# =============================================================================
+# PERFORMANCE SUMMARY
+# =============================================================================
+
+def maximum_drawdown_r(values: pd.Series) -> float:
+    if values.empty:
+        return 0.0
+
+    equity = values.cumsum()
+    running_peak = equity.cummax()
+    drawdown = equity - running_peak
+
+    return float(drawdown.min())
+
+
+def summarize_trades(
+    trades: pd.DataFrame,
+) -> pd.DataFrame:
+    if trades.empty:
+        return pd.DataFrame()
+
+    summaries: list[dict] = []
+
+    group_columns = [
+        "zone_direction",
+        "target_r",
+    ]
+
+    for keys, group in trades.groupby(group_columns):
+        direction, target_r = keys
+
+        wins = group["realized_r"] > 0
+        losses = group["realized_r"] < 0
+
+        gross_profit = float(
+            group.loc[wins, "realized_r"].sum()
+        )
+
+        gross_loss = abs(
+            float(group.loc[losses, "realized_r"].sum())
+        )
+
+        profit_factor = (
+            gross_profit / gross_loss
+            if gross_loss > 0
+            else float("inf")
+        )
+
+        window_results = (
+            group.groupby("window")["realized_r"]
+            .sum()
+        )
+
+        positive_windows = (
+            float((window_results > 0).mean())
+            if not window_results.empty
+            else 0.0
+        )
+
+        summaries.append(
+            {
+                "direction": direction,
+                "target_r": float(target_r),
+                "trades": int(len(group)),
+                "wins": int(wins.sum()),
+                "losses": int(losses.sum()),
+                "win_rate": float(wins.mean()),
+                "expectancy_r": float(
+                    group["realized_r"].mean()
+                ),
+                "net_r": float(
+                    group["realized_r"].sum()
+                ),
+                "profit_factor": profit_factor,
+                "maximum_drawdown_r": maximum_drawdown_r(
+                    group.sort_values("entry_time")["realized_r"]
+                ),
+                "walk_forward_windows": int(
+                    group["window"].nunique()
+                ),
+                "positive_window_rate": positive_windows,
+            }
+        )
+
+    summary = pd.DataFrame(summaries)
+
+    return summary.sort_values(
+        [
+            "expectancy_r",
+            "positive_window_rate",
+            "profit_factor",
+        ],
+        ascending=[False, False, False],
+    ).reset_index(drop=True)
+
+
+# =============================================================================
+# CURRENT ZONES
+# =============================================================================
+
+def classify_zone_status(
+    zone: pd.Series,
+    current_price: float,
+) -> str:
+    zone_low = float(zone["zone_low"])
+    zone_high = float(zone["zone_high"])
+
+    if zone_low <= current_price <= zone_high:
+        return "PRICE INSIDE ZONE"
+
+    if zone["direction"] == "demand":
+        if current_price > zone_high:
+            return "BELOW PRICE — POTENTIAL BUY AREA"
+        return "BROKEN OR ABOVE PRICE"
+
+    if current_price < zone_low:
+        return "ABOVE PRICE — POTENTIAL SELL AREA"
+
+    return "BROKEN OR BELOW PRICE"
+
+
+# =============================================================================
+# REPORTING
+# =============================================================================
+
+def format_price(price: float) -> str:
+    return f"{price:.5f}"
+
+
+def print_current_zones(
+    zones: pd.DataFrame,
+    current_price: float,
+    config: Config,
+) -> None:
+    print()
+    print("=" * 108)
+    print("CURRENT MARKET MEMORY ZONES")
+    print("=" * 108)
+    print(f"Current close: {format_price(current_price)}")
+
+    if zones.empty:
+        print("No qualifying current zones found.")
+        return
+
+    for direction in ["demand", "supply"]:
+        subset = zones[
+            zones["direction"] == direction
+        ].head(config.top_zones_to_print)
+
+        print()
+        print(direction.upper() + " ZONES")
+        print("-" * 108)
+
+        if subset.empty:
+            print("None found.")
+            continue
+
+        for rank, (_, zone) in enumerate(
+            subset.iterrows(),
+            start=1,
+        ):
+            status = classify_zone_status(
+                zone,
+                current_price,
+            )
+
+            print(
+                f"{rank:>2}. "
+                f"{format_price(zone['zone_low'])}"
+                f"–{format_price(zone['zone_high'])}  "
+                f"reactions={int(zone['reaction_count'])}  "
+                f"avg departure={zone['average_departure_atr']:.2f} ATR  "
+                f"strength={zone['strength_score']:.2f}"
+            )
+            print(f"    {status}")
+
+
+def print_summary(
+    candles: pd.DataFrame,
+    reactions: pd.DataFrame,
+    trades: pd.DataFrame,
+    summary: pd.DataFrame,
+    current_zones: pd.DataFrame,
+    config: Config,
+) -> None:
+    print()
+    print("=" * 108)
+    print("LINQ MARKET MEMORY ENGINE — V1 RESULTS")
+    print("=" * 108)
+
+    print(f"Candles loaded:                 {len(candles):,}")
+    print(
+        f"Data range:                     "
+        f"{candles['time'].min()} through {candles['time'].max()}"
+    )
+    print(f"Historical reactions detected: {len(reactions):,}")
+    print(f"Walk-forward trades simulated: {len(trades):,}")
+    print(f"Current zones identified:       {len(current_zones):,}")
+
+    if reactions.empty:
+        print()
+        print("No reactions were found. Try lowering --reaction-atr.")
+        return
+
+    demand_count = int(
+        (reactions["direction"] == "demand").sum()
+    )
+    supply_count = int(
+        (reactions["direction"] == "supply").sum()
+    )
+
+    print(f"Demand reactions:               {demand_count:,}")
+    print(f"Supply reactions:               {supply_count:,}")
+
+    print()
+    print("WALK-FORWARD TARGET RESULTS")
+    print("-" * 108)
+
+    if summary.empty:
+        print("No qualifying walk-forward trades were generated.")
+    else:
+        display = summary.copy()
+
+        display["win_rate"] = (
+            display["win_rate"] * 100
+        ).map(lambda value: f"{value:.1f}%")
+
+        display["positive_window_rate"] = (
+            display["positive_window_rate"] * 100
+        ).map(lambda value: f"{value:.1f}%")
+
+        display["expectancy_r"] = display[
+            "expectancy_r"
+        ].map(lambda value: f"{value:+.3f}R")
+
+        display["net_r"] = display[
+            "net_r"
+        ].map(lambda value: f"{value:+.2f}R")
+
+        display["maximum_drawdown_r"] = display[
+            "maximum_drawdown_r"
+        ].map(lambda value: f"{value:.2f}R")
+
+        display["profit_factor"] = display[
+            "profit_factor"
+        ].map(
+            lambda value: (
+                "inf"
+                if not math.isfinite(value)
+                else f"{value:.3f}"
+            )
+        )
+
+        columns = [
+            "direction",
+            "target_r",
+            "trades",
+            "win_rate",
+            "expectancy_r",
+            "net_r",
+            "profit_factor",
+            "maximum_drawdown_r",
+            "walk_forward_windows",
+            "positive_window_rate",
+        ]
+
+        print(display[columns].to_string(index=False))
+
+    print_current_zones(
+        current_zones,
+        float(candles.iloc[-1]["close"]),
+        config,
+    )
+
+
+# =============================================================================
+# COMMAND LINE
+# =============================================================================
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Detect, cluster, score, and walk-forward test "
+            "historical reaction zones."
+        )
+    )
+
+    parser.add_argument(
+        "--candles",
+        required=True,
+        help="Path to M5 candle CSV.",
+    )
+
+    parser.add_argument(
+        "--report-dir",
+        default="reports/market_memory_v1",
+        help="Directory for CSV reports.",
+    )
+
+    parser.add_argument(
+        "--reaction-atr",
+        type=float,
+        default=1.0,
+        help=(
+            "Minimum opposite-direction movement required "
+            "to confirm a reaction."
+        ),
+    )
+
+    parser.add_argument(
+        "--reaction-bars",
+        type=int,
+        default=24,
+        help="Maximum bars allowed for reaction confirmation.",
+    )
+
+    parser.add_argument(
+        "--zone-lookback-days",
+        type=int,
+        default=14,
+        help="Days used to form zones at each decision point.",
+    )
+
+    parser.add_argument(
+        "--cluster-radius-atr",
+        type=float,
+        default=0.50,
+        help="Maximum ATR-normalized distance between reactions.",
+    )
+
+    parser.add_argument(
+        "--minimum-reactions",
+        type=int,
+        default=2,
+        help="Minimum reaction count needed to create a zone.",
+    )
+
+    parser.add_argument(
+        "--research-days",
+        type=int,
+        default=90,
+        help="Most recent days included in walk-forward research.",
+    )
+
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_arguments()
+
+    config = Config(
+        reaction_atr=args.reaction_atr,
+        reaction_lookahead_bars=args.reaction_bars,
+        zone_lookback_days=args.zone_lookback_days,
+        current_zone_lookback_days=args.zone_lookback_days,
+        cluster_radius_atr=args.cluster_radius_atr,
+        minimum_reactions=args.minimum_reactions,
+        research_days=args.research_days,
+    )
+
+    candle_path = Path(args.candles).expanduser()
+    report_dir = Path(args.report_dir).expanduser()
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 108)
+    print("LINQ MARKET MEMORY ENGINE — V1")
+    print("=" * 108)
+    print(f"Loading candles from: {candle_path}")
+
+    candles = load_candles(candle_path)
+    candles = add_features(candles, config)
+
+    print(f"Loaded {len(candles):,} candles.")
+    print("Detecting historical reactions...")
+
+    reactions = detect_reactions(
+        candles,
+        config,
+    )
+
+    print(f"Detected {len(reactions):,} confirmed reactions.")
+    print("Running chronological walk-forward zone tests...")
+
+    trades = run_walk_forward(
+        candles,
+        reactions,
+        config,
+    )
+
+    summary = summarize_trades(trades)
+
+    current_as_of = candles["time"].max()
+
+    current_zones = build_zones(
+        reactions,
+        as_of_time=current_as_of,
+        config=config,
+    )
+
+    print_summary(
+        candles,
+        reactions,
+        trades,
+        summary,
+        current_zones,
+        config,
+    )
+
+    reactions.to_csv(
+        report_dir / "reactions.csv",
+        index=False,
+    )
+
+    current_zones.to_csv(
+        report_dir / "current_zones.csv",
+        index=False,
+    )
+
+    trades.to_csv(
+        report_dir / "walk_forward_trades.csv",
+        index=False,
+    )
+
+    summary.to_csv(
+        report_dir / "target_summary.csv",
+        index=False,
+    )
+
+    print()
+    print(f"Reports saved to: {report_dir}")
+
+
+if __name__ == "__main__":
+    main()
+

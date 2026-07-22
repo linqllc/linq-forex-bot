@@ -1,0 +1,12 @@
+mode: disabled
+live_trading_enabled: false
+paper_trading_required: true
+risk:
+  risk_per_trade_pct: 0.25
+  max_daily_loss_pct: 1.0
+  max_weekly_loss_pct: 2.5
+  max_open_positions: 1
+kill_switch:
+  enabled: true
+  stop_on_data_staleness: true
+  stop_on_broker_reconciliation_error: true

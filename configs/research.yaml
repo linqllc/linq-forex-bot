@@ -1,0 +1,15 @@
+mode: research
+instrument: EUR_USD
+timeframe: M5
+execution:
+  spread_pips: 0.8
+  slippage_pips: 0.1
+risk:
+  risk_per_trade_pct: 0.25
+  max_daily_loss_pct: 1.0
+  max_open_positions: 1
+validation:
+  require_signal_parity: true
+  require_execution_parity: true
+  gross_r_tolerance: 0.10
+  net_r_tolerance: 0.10

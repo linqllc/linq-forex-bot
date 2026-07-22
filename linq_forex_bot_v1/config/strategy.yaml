@@ -1,0 +1,47 @@
+strategy:
+  name: LINQ Supply Demand Research Bot v1
+  timezone: America/New_York
+  granularity: M5
+
+  instruments:
+    - EUR_USD
+    - GBP_USD
+    - USD_JPY
+    - AUD_USD
+
+  session:
+    opening_range_start: "09:30"
+    opening_range_end: "09:45"
+    entry_start: "09:45"
+    entry_end: "12:00"
+
+  impulse:
+    lookback_bodies: 20
+    body_multiplier: 1.25
+    minimum_body_fraction: 0.60
+    atr_period: 14
+    minimum_displacement_atr: 1.00
+
+  zone:
+    search_back_candles: 8
+    expiration_candles: 12
+    first_touch_only: true
+
+  entry:
+    mode: confirmation
+    rejection_close_fraction: 0.50
+
+  risk:
+    reward_to_risk: 2.0
+    stop_atr_buffer: 0.10
+    account_balance: 10000
+    risk_per_trade: 0.0025
+    max_trades_per_pair_per_day: 1
+
+  costs:
+    default_spread_pips:
+      EUR_USD: 0.8
+      GBP_USD: 1.2
+      USD_JPY: 0.9
+      AUD_USD: 1.0
+    slippage_pips: 0.2

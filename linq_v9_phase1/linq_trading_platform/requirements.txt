@@ -1,0 +1,5 @@
+backtrader
+pandas
+numpy
+scikit-learn
+matplotlib
