@@ -40,3 +40,6 @@ data/*.feather
 *_backup*
 *.bak
 *.kup*
+
+# Generated backtest output
+results/
